@@ -18,7 +18,7 @@ const SITE_ICONS = {
 let master = MASTER;
 let unlocked = false;
 let exists = !location.search.includes('setup');
-let settings = { autoLockMinutes: 5, clipboardSeconds: 30, lockOnMinimize: false, closeToTray: true, lockOnSystemLock: true, hideFromCapture: true, masterGraceMinutes: 1, siteIcons: true, expiryNotify: true, sortBy: 'name', backupKeep: 10, backupDir: null, browserExtension: true, accent: null };
+let settings = { autoLockMinutes: 5, clipboardSeconds: 30, lockOnMinimize: false, closeToTray: true, lockOnSystemLock: true, hideFromCapture: true, masterGraceMinutes: 1, siteIcons: true, expiryNotify: true, sortBy: 'name', backupKeep: 10, backupDir: null, browserExtension: true, syncAuto: true, accent: null };
 let sync = { dir: null, at: null, error: null, needPassword: false };
 let backups = { count: 3, last: Date.now() - 5 * 3600e3 };
 const backupStatus = () => ({ dir: settings.backupDir || 'C:\\Users\\vous\\AppData\\Roaming\\Pimkey\\copies', custom: !!settings.backupDir, error: null, ...backups });

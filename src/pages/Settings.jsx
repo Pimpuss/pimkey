@@ -142,7 +142,7 @@ function AutoBackups() {
 
 // Synchronisation : coffre chiffré recopié dans un dossier synchronisé et fusionné avec celui des autres appareils
 function SyncSetting() {
-  const { setEntries, guard, toast, askMaster } = useApp();
+  const { settings, updateSettings, setEntries, guard, toast, askMaster } = useApp();
   const [status, setStatus] = useState(null);
   useEffect(() => {
     window.pimkey.sync.status().then(setStatus).catch(() => {});
@@ -171,25 +171,35 @@ function SyncSetting() {
   const now = guard(async () => { setStatus(await window.pimkey.sync.now()); toast('Coffre synchronisé'); });
   const stop = guard(async () => { setStatus(await window.pimkey.sync.disable()); toast('Synchronisation arrêtée'); });
   if (!status) return null;
+  const auto = settings.syncAuto !== false;
 
   return (
-    <Setting title="Synchroniser avec un dossier" actions={status.dir ? (
-      <>
-        {status.needPassword
-          ? <button className="btn primary" onClick={guard(join)}><KeyRound /> Rejoindre…</button>
-          : <button className="btn" onClick={now}><RefreshCw /> Synchroniser</button>}
-        <button className="btn icon" title="Changer de dossier" onClick={choose}><FolderInput /></button>
-        <button className="btn icon" title="Ouvrir le dossier" onClick={guard(() => window.pimkey.sync.openDir())}><FolderOpen /></button>
-        <button className="btn ghost icon" title="Arrêter la synchronisation" onClick={stop}><CloudOff /></button>
-      </>
-    ) : <button className="btn" onClick={choose}><FolderInput /> Choisir un dossier…</button>}>
-      Le coffre chiffré est recopié dans un dossier synchronisé (OneDrive, Google Drive, Dropbox, Syncthing…) et fusionné,
-      élément par élément, avec les modifications faites sur vos autres appareils. Le service ne voit qu’un fichier chiffré.
-      {status.dir && <em className="setting-path">{status.dir}</em>}
-      {status.at && !status.error && <em className="setting-sub">Dernière synchronisation : {formatWhen(status.at)}</em>}
-      {status.needPassword && <em className="setting-error">Ce dossier contient un coffre créé sur un autre appareil : rejoignez-le avec son mot de passe maître.</em>}
-      {status.error && <em className="setting-error">Synchronisation impossible : {status.error}</em>}
-    </Setting>
+    <>
+      <Setting title="Synchroniser avec un dossier" actions={status.dir ? (
+        <>
+          {status.needPassword
+            ? <button className="btn primary" onClick={guard(join)}><KeyRound /> Rejoindre…</button>
+            : <button className="btn" onClick={now}><RefreshCw /> Synchroniser</button>}
+          <button className="btn icon" title="Changer de dossier" onClick={choose}><FolderInput /></button>
+          <button className="btn icon" title="Ouvrir le dossier" onClick={guard(() => window.pimkey.sync.openDir())}><FolderOpen /></button>
+          <button className="btn ghost icon" title="Arrêter la synchronisation" onClick={stop}><CloudOff /></button>
+        </>
+      ) : <button className="btn" onClick={choose}><FolderInput /> Choisir un dossier…</button>}>
+        Le coffre chiffré est recopié dans un dossier synchronisé (OneDrive, Google Drive, Dropbox, Syncthing…) et fusionné,
+        élément par élément, avec les modifications faites sur vos autres appareils. Le service ne voit qu’un fichier chiffré.
+        {status.dir && <em className="setting-path">{status.dir}</em>}
+        {status.at && !status.error && <em className="setting-sub">Dernière synchronisation : {formatWhen(status.at)}</em>}
+        {status.needPassword && <em className="setting-error">Ce dossier contient un coffre créé sur un autre appareil : rejoignez-le avec son mot de passe maître.</em>}
+        {status.error && <em className="setting-error">Synchronisation impossible : {status.error}</em>}
+      </Setting>
+      {status.dir && (
+        <Setting title="Synchronisation automatique" actions={<Toggle on={auto} onChange={(v) => updateSettings({ syncAuto: v })} />}>
+          {auto
+            ? 'Quelques secondes après chaque modification, à l’ouverture du coffre et dès qu’un autre appareil a modifié le dossier.'
+            : 'En pause : rien n’est envoyé ni reçu tant que vous ne cliquez pas sur « Synchroniser ».'}
+        </Setting>
+      )}
+    </>
   );
 }
 

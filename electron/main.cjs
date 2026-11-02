@@ -341,8 +341,11 @@ function runSync() {
   send('sync', { ...syncStatus(), notice });
 }
 
+// Synchronisation automatique en pause (réglage) : seulement à la demande (« Synchroniser »)
+const syncAuto = () => !!syncDir() && settings.data.syncAuto !== false;
+
 const scheduleSync = () => {
-  if (!syncDir()) return;
+  if (!syncAuto()) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(runSync, 2000);
 };
@@ -351,7 +354,7 @@ const scheduleSync = () => {
 function watchSync() {
   let ticks = 0;
   setInterval(() => {
-    if (!syncDir() || !vault.unlocked || syncTimer) return;
+    if (!syncAuto() || !vault.unlocked || syncTimer) return;
     // Toutes les 5 minutes, fusion même sans changement visible (copies en conflit laissées par le service)
     if (remoteStamp() !== syncSeen || ++ticks % 20 === 0) runSync();
   }, 15e3);
@@ -589,7 +592,7 @@ function setupIpc() {
   });
   // Après tout déverrouillage : icônes manquantes, copie de l'état d'avant les modifications du jour, rappels
   const afterUnlock = () => {
-    setTimeout(runSync, 300);
+    setTimeout(() => syncAuto() && runSync(), 300);
     setTimeout(refreshSiteIcons, 1500);
     setTimeout(() => autoBackup(), 500);
     setTimeout(notifyExpiries, 3000);
@@ -964,6 +967,7 @@ function setupIpc() {
     if (before && !data.siteIcons && vault.unlocked) { vault.clearSiteIcons(); send('entries', vault.list()); }
     if (!before && data.siteIcons) refreshSiteIcons();
     if ('backupKeep' in rest) autoBackup();
+    if (rest.syncAuto && syncAuto()) runSync(); // reprise : ce qui a changé pendant la pause part tout de suite
     return data;
   });
   handle('app:info', () => ({ version: app.getVersion(), dataDir: app.getPath('userData'), dev: !app.isPackaged }));

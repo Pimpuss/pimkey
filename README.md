@@ -91,7 +91,8 @@ sans toucher au vrai coffre ; ignoré par l'app installée.
 
 Le coffre local reste la référence (Pimkey marche sans le dossier) ; le dossier choisi en contient une copie que
 chaque appareil fusionne avec la sienne ([electron/sync.cjs](electron/sync.cjs), `Vault.syncWith`) : peu après chaque
-modification, au déverrouillage, toutes les 15 s si le fichier du dossier a changé, et avant de verrouiller.
+modification, au déverrouillage, toutes les 15 s si le fichier du dossier a changé, et avant de verrouiller. Le réglage
+« Synchronisation automatique » la met en pause (seulement à la demande, bouton « Synchroniser ») sans oublier le dossier.
 
 - **Contenu du dossier** : `vault.pimkey` (même format que le coffre local, chiffré par la même clé des données) et
   `attachments/` (pièces jointes, chiffrées). Le service ne voit que des fichiers chiffrés et leur taille. Ni Windows
