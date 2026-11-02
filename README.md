@@ -79,11 +79,35 @@ sans toucher au vrai coffre ; ignoré par l'app installée.
 - **Copies automatiques** : une copie `.pimkey-backup` par jour quand le coffre a changé (à l'ouverture, puis toutes
   les heures s'il reste ouvert), les 10 dernières gardées (réglable, ou désactivé). Dossier au choix (OneDrive, disque externe…).
   Après un changement de mot de passe maître, une copie est faite tout de suite ; les précédentes gardent l'ancien.
+- **Synchronisation** (option, Paramètres › Synchronisation) : le coffre chiffré est recopié dans un dossier synchronisé
+  (OneDrive, Google Drive, Dropbox, Syncthing…) et fusionné avec celui des autres appareils. Voir ci-dessous.
 - Fenêtre masquée dans les captures et partages d'écran (option), recherche (Ctrl + F), couleur d'accent.
 - **Extension Chrome et Edge** (option, Paramètres › Navigateur) : remplit identifiant et mot de passe sur la page de
   connexion d'un site du coffre, en deux clics (icône Pimkey dans le champ ou dans la barre du navigateur, puis
   l'identifiant) ; code 2FA rempli dans le champ du code, ou copié ; propose d'enregistrer un identifiant saisi
   (bandeau « Enregistrer dans Pimkey ? », ou « Mettre à jour » si le mot de passe a changé). Voir ci-dessous.
+
+## Synchronisation
+
+Le coffre local reste la référence (Pimkey marche sans le dossier) ; le dossier choisi en contient une copie que
+chaque appareil fusionne avec la sienne ([electron/sync.cjs](electron/sync.cjs), `Vault.syncWith`) : peu après chaque
+modification, au déverrouillage, toutes les 15 s si le fichier du dossier a changé, et avant de verrouiller.
+
+- **Contenu du dossier** : `vault.pimkey` (même format que le coffre local, chiffré par la même clé des données) et
+  `attachments/` (pièces jointes, chiffrées). Le service ne voit que des fichiers chiffrés et leur taille. Ni Windows
+  Hello (lié au TPM de chaque PC), ni les navigateurs appairés, ni l'état de fusion n'y figurent.
+- **Fusion à trois, élément par élément** : chaque appareil retient la signature de chaque élément à sa dernière
+  synchronisation. Un côté inchangé depuis cède la place à l'autre ; un élément absent d'un côté et inchangé de l'autre
+  a été supprimé pour de bon. Contenu (nom, champs, pièces jointes) et état (favori, corbeille) se fusionnent à part.
+- **Conflit** (même élément modifié sur deux appareils entre deux synchronisations) : la version modifiée en dernier
+  l'emporte, l'autre est gardée sous le nom « … (conflit) ». Les copies que le service crée quand deux appareils écrivent
+  en même temps (`vault-PC.pimkey`, `vault (1).pimkey`, `vault.sync-conflict-….pimkey`) sont fusionnées puis effacées.
+- **Deuxième appareil** : il crée son propre coffre, puis choisit le même dossier ; Pimkey demande le mot de passe
+  maître du coffre du dossier et le rejoint (ses éléments sont ajoutés, il adopte la clé et le mot de passe du dossier ;
+  Windows Hello est à réactiver).
+- **Mot de passe maître** : changé sur un appareil, il s'applique aux autres à leur synchronisation suivante (`keyAt` :
+  le plus récent l'emporte ; la clé des données ne change pas).
+- **App mobile** (à venir) : elle lira et écrira le même dossier, avec le même format et la même fusion.
 
 ## Extension navigateur
 
@@ -191,7 +215,8 @@ settings.json     réglages, en clair (rien de secret)
 electron/
   main.cjs        fenêtre, IPC, verrouillage automatique, presse-papiers
   preload.cjs     API exposée au rendu (window.pimkey)
-  vault.cjs       chiffrement, éléments, pièces jointes, corbeille, audit, sauvegarde
+  vault.cjs       chiffrement, éléments, pièces jointes, corbeille, audit, sauvegarde, synchronisation
+  sync.cjs        fusion de deux coffres (synchronisation par un dossier)
   totp.cjs        codes 2FA (RFC 6238)
   importer.cjs    lecture des exports CSV d'autres gestionnaires
   settings.cjs    réglages

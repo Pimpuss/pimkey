@@ -80,8 +80,10 @@ export function AppProvider({ children }) {
         toast(`${p.done} est appairé à Pimkey`);
       } else setPair(p);
     };
+    // 'sync' : fusion avec le dossier synchronisé ; notice : conflits, mot de passe maître changé ailleurs
+    const onSync = (s) => { if (s?.notice) toast(s.notice); };
     const offs = [window.pimkey.on('locked', onLocked), window.pimkey.on('entries', setEntries), window.pimkey.on('show', onShow), window.pimkey.on('update', setUpdate),
-      window.pimkey.on('pair', onPair)];
+      window.pimkey.on('pair', onPair), window.pimkey.on('sync', onSync)];
     return () => offs.forEach((off) => off());
   }, [onLocked, onUnlocked, toast]);
 

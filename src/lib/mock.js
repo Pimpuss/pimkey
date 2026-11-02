@@ -19,6 +19,7 @@ let master = MASTER;
 let unlocked = false;
 let exists = !location.search.includes('setup');
 let settings = { autoLockMinutes: 5, clipboardSeconds: 30, lockOnMinimize: false, closeToTray: true, lockOnSystemLock: true, hideFromCapture: true, masterGraceMinutes: 1, siteIcons: true, expiryNotify: true, sortBy: 'name', backupKeep: 10, backupDir: null, browserExtension: true, accent: null };
+let sync = { dir: null, at: null, error: null, needPassword: false };
 let backups = { count: 3, last: Date.now() - 5 * 3600e3 };
 const backupStatus = () => ({ dir: settings.backupDir || 'C:\\Users\\vous\\AppData\\Roaming\\Pimkey\\copies', custom: !!settings.backupDir, error: null, ...backups });
 let entries = [
@@ -41,7 +42,7 @@ let entries = [
   { type: 'login', title: 'Ancien compte Fnac', deletedAt: Date.now() - 4 * day, fields: { username: 'camille.d', password: 'fnac-1234', url: 'fnac.com' } },
 ].map((e, i) => ({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, favorite: false, createdAt: Date.now() - (i + 3) * day, updatedAt: Date.now() - i * day, attachments: [], tags: [], custom: [], ...e }));
 
-const listeners = { locked: new Set(), entries: new Set(), show: new Set(), update: new Set(), pair: new Set() };
+const listeners = { locked: new Set(), entries: new Set(), show: new Set(), update: new Set(), pair: new Set(), sync: new Set() };
 
 // Extension navigateur : un navigateur déjà appairé pour l'aperçu
 let devices = [{ id: 'd1', name: 'Chrome', createdAt: Date.now() - 12 * 86400e3, usedAt: Date.now() - 3600e3 }];
@@ -234,7 +235,15 @@ export function installMock() {
       openDir: async () => {},
     },
     update: { status: async () => ({ state: 'dev' }), check: async () => {}, install: async () => {} },
-    settings: { get: async () => settings, set: async ({ backupDir: _, ...patch }) => (settings = { ...settings, ...patch }) },
+    settings: { get: async () => settings, set: async ({ backupDir: _, syncDir: __, ...patch }) => (settings = { ...settings, ...patch }) },
+    sync: {
+      status: async () => sync,
+      setDir: async () => (sync = { dir: 'C:\\Users\\vous\\OneDrive\\Pimkey', at: Date.now(), error: null, needPassword: false }),
+      join: async (pw) => { if (!pw) throw new Error('MASTER_REQUIRED'); await check(pw); sync = { ...sync, at: Date.now(), needPassword: false }; return { status: sync, list: list() }; },
+      now: async () => { await wait(400); return (sync = { ...sync, at: Date.now() }); },
+      disable: async () => (sync = { dir: null, at: null, error: null, needPassword: false }),
+      openDir: async () => {},
+    },
     bridge: {
       status: async () => bridgeStatus(),
       enable: async (on) => { settings = { ...settings, browserExtension: !!on }; return bridgeStatus(); },

@@ -281,6 +281,83 @@ const { trimIco } = require('../electron/favicon.cjs');
     v.removeEntries([m1, m2]);
     assert.equal(v.list().length, total - 2);
     step('sélection multiple : corbeille, restauration, suppression');
+
+    // Synchronisation : deux appareils (A, B) et un dossier partagé (OneDrive…)
+    const sync = path.join(dir, 'cloud');
+    const A = new Vault(path.join(dir, 'pc-a'));
+    const B = new Vault(path.join(dir, 'pc-b'));
+    await A.create('mot de passe A');
+    await B.create('mot de passe B');
+    const titles = (x) => x.list().map((e) => e.title).sort();
+    const byTitle = (x, t) => x.list().find((e) => e.title === t);
+    const banque = A.saveEntry({ type: 'login', title: 'Banque', fields: { username: 'moi', password: 'b4nque!' } });
+    A.addAttachment(banque, { name: 'rib.pdf', mime: 'application/pdf', buf: Buffer.from('RIB de test') });
+    const notes = A.saveEntry({ type: 'note', title: 'Notes', fields: { content: 'v1' } });
+    B.saveEntry({ type: 'login', title: 'Mail de B', fields: { username: 'b', password: 'mailB' } });
+    B.addAttachment(B.list()[0].id, { name: 'b.txt', mime: 'text/plain', buf: Buffer.from('pièce de B') });
+    assert.throws(() => A.syncWith(A.dir), /en dehors/);
+    A.syncWith(sync);
+    assert.ok(fs.existsSync(path.join(sync, 'vault.pimkey')));
+    assert.ok(!fs.readFileSync(path.join(sync, 'vault.pimkey'), 'utf8').includes('b4nque'), 'dossier en clair');
+    assert.deepEqual(A.syncWith(sync), { changed: false, conflicts: 0, passwordChanged: false });
+    // B a son propre coffre : il rejoint celui du dossier avec le mot de passe de A
+    assert.throws(() => B.syncWith(sync), /SYNC_PASSWORD/);
+    await assert.rejects(B.joinSync(sync, 'mauvais mot de passe'), /incorrect/);
+    const joined = await B.joinSync(sync, 'mot de passe A');
+    assert.equal(joined.joined, true);
+    assert.deepEqual(titles(B), ['Banque', 'Mail de B', 'Notes']);
+    assert.equal(B.readAttachment(byTitle(B, 'Mail de B').id, byTitle(B, 'Mail de B').attachments[0].id).buf.toString(), 'pièce de B');
+    assert.equal(B.readAttachment(banque, byTitle(B, 'Banque').attachments[0].id).buf.toString(), 'RIB de test');
+    B.lock();
+    await B.unlock('mot de passe A');
+    assert.equal(A.syncWith(sync).changed, true);
+    assert.deepEqual(titles(A), ['Banque', 'Mail de B', 'Notes']);
+    assert.equal(A.readAttachment(byTitle(A, 'Mail de B').id, byTitle(A, 'Mail de B').attachments[0].id).buf.toString(), 'pièce de B');
+    step('synchronisation : premier envoi, appareil qui rejoint, pièces jointes');
+
+    // Modifications non conflictuelles : favori sur B, mot de passe changé sur A, suppression définitive sur B
+    B.setFavorite(banque, true);
+    A.saveEntry({ id: banque, title: 'Banque', fields: { password: 'n0uveau!' } });
+    const mailB = byTitle(B, 'Mail de B');
+    B.removeEntries([mailB.id]);
+    B.syncWith(sync);
+    A.syncWith(sync);
+    B.syncWith(sync);
+    for (const x of [A, B]) {
+      assert.deepEqual(titles(x), ['Banque', 'Notes']);
+      assert.equal(byTitle(x, 'Banque').favorite, true);
+      assert.equal(x.getField(banque, 'password'), 'n0uveau!');
+    }
+    assert.ok(!fs.existsSync(path.join(sync, 'attachments', `${mailB.attachments[0].id}.bin`)), 'pièce jointe supprimée restée dans le dossier');
+    assert.ok(!fs.existsSync(A.attFile(mailB.attachments[0].id)));
+    step('synchronisation : favori, modification, suppression définitive');
+
+    // Conflit : même note modifiée des deux côtés ; la plus récente gagne, l'autre est gardée « (conflit) »
+    A.saveEntry({ id: notes, title: 'Notes', fields: { content: 'version A' } });
+    await new Promise((r) => setTimeout(r, 5));
+    B.saveEntry({ id: notes, title: 'Notes', fields: { content: 'version B' } });
+    A.syncWith(sync);
+    assert.equal(B.syncWith(sync).conflicts, 1);
+    A.syncWith(sync);
+    for (const x of [A, B]) {
+      assert.equal(x.getField(notes, 'content'), 'version B');
+      assert.equal(x.getField(byTitle(x, 'Notes (conflit)').id, 'content'), 'version A');
+    }
+    // Copie laissée par le service (deux écritures simultanées) : fusionnée puis effacée
+    fs.copyFileSync(path.join(sync, 'vault.pimkey'), path.join(sync, 'vault-PC-B.pimkey'));
+    A.syncWith(sync);
+    assert.ok(!fs.existsSync(path.join(sync, 'vault-PC-B.pimkey')));
+    assert.equal(titles(A).length, 3);
+    step('synchronisation : conflit gardé à part, copie du service fusionnée');
+
+    // Mot de passe maître changé sur A : B l'adopte (même clé des données)
+    await A.changePassword('mot de passe A', 'nouveau mot de passe');
+    A.syncWith(sync);
+    assert.equal(B.syncWith(sync).passwordChanged, true);
+    B.lock();
+    await assert.rejects(B.unlock('mot de passe A'), /incorrect/);
+    await B.unlock('nouveau mot de passe');
+    step('synchronisation : mot de passe maître changé sur un autre appareil');
     console.log('\nTous les tests du coffre passent.');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

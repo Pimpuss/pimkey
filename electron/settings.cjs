@@ -14,6 +14,7 @@ const DEFAULTS = {
   expiryNotify: true, // notification Windows quand un document ou une carte expire bientôt
   backupKeep: 10, // nombre de copies automatiques gardées ; 0 = pas de copie automatique
   backupDir: null,
+  syncDir: null, // dossier synchronisé (OneDrive…) où le coffre est recopié et fusionné ; null = pas de synchronisation
   browserExtension: false, // extension Chrome et Edge : hôte natif déclaré et canal ouvert // dossier des copies automatiques ; null = « copies » dans le dossier des données
   sortBy: 'name', // ordre de la liste : name, updated, created, type
   accent: null,

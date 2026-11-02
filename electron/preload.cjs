@@ -59,6 +59,14 @@ contextBridge.exposeInMainWorld('pimkey', {
     openDir: invoke('backup:openDir'),
   },
   settings: { get: invoke('settings:get'), set: invoke('settings:set') },
+  sync: {
+    status: invoke('sync:status'),
+    setDir: invoke('sync:setDir'),
+    join: invoke('sync:join'),
+    now: invoke('sync:now'),
+    disable: invoke('sync:disable'),
+    openDir: invoke('sync:openDir'),
+  },
   bridge: {
     status: invoke('bridge:status'),
     enable: invoke('bridge:enable'),
@@ -69,7 +77,7 @@ contextBridge.exposeInMainWorld('pimkey', {
   update: { status: invoke('update:status'), check: invoke('update:check'), install: invoke('update:install') },
   app: { info: invoke('app:info'), openData: invoke('app:openData'), activity: () => ipcRenderer.send('app:activity') },
   on(channel, cb) {
-    const allowed = ['locked', 'entries', 'show', 'update', 'pair'];
+    const allowed = ['locked', 'entries', 'show', 'update', 'pair', 'sync'];
     if (!allowed.includes(channel)) throw new Error(`Canal non autorisé : ${channel}`);
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on(channel, listener);

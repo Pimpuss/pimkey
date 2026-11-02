@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, DatabaseBackup, FolderInput, FolderOpen, History, Keyboard, KeyRound, Palette, Puzzle, RefreshCw, RotateCcw, ShieldCheck, Upload, Unlink, WandSparkles } from 'lucide-react';
+import { Check, Cloud, CloudOff, DatabaseBackup, FolderInput, FolderOpen, History, Keyboard, KeyRound, Palette, Puzzle, RefreshCw, RotateCcw, ShieldCheck, Upload, Unlink, WandSparkles } from 'lucide-react';
 import Logo from '../components/Logo.jsx';
 import { Modal, PasswordInput, Select, StrengthBar, Toggle } from '../components/ui.jsx';
 import { errText, useApp } from '../lib/context.jsx';
@@ -137,6 +137,59 @@ function AutoBackups() {
         </Setting>
       )}
     </>
+  );
+}
+
+// Synchronisation : coffre chiffré recopié dans un dossier synchronisé et fusionné avec celui des autres appareils
+function SyncSetting() {
+  const { setEntries, guard, toast, askMaster } = useApp();
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    window.pimkey.sync.status().then(setStatus).catch(() => {});
+    return window.pimkey.on('sync', setStatus);
+  }, []);
+
+  const join = async () => {
+    const r = await askMaster({
+      title: 'Rejoindre le coffre synchronisé',
+      text: 'Ce dossier contient déjà un coffre Pimkey, créé sur un autre appareil. Entrez son mot de passe maître : '
+        + 'vos éléments y seront ajoutés et ce mot de passe deviendra celui de cet ordinateur (Windows Hello sera à réactiver).',
+      action: (master) => window.pimkey.sync.join(master),
+    });
+    if (!r) return;
+    setEntries(r.list);
+    setStatus(r.status);
+    toast('Coffre synchronisé');
+  };
+  const choose = guard(async () => {
+    const s = await window.pimkey.sync.setDir();
+    if (!s) return;
+    setStatus(s);
+    if (s.needPassword) await join();
+    else if (!s.error) toast('Synchronisation activée');
+  });
+  const now = guard(async () => { setStatus(await window.pimkey.sync.now()); toast('Coffre synchronisé'); });
+  const stop = guard(async () => { setStatus(await window.pimkey.sync.disable()); toast('Synchronisation arrêtée'); });
+  if (!status) return null;
+
+  return (
+    <Setting title="Synchroniser avec un dossier" actions={status.dir ? (
+      <>
+        {status.needPassword
+          ? <button className="btn primary" onClick={guard(join)}><KeyRound /> Rejoindre…</button>
+          : <button className="btn" onClick={now}><RefreshCw /> Synchroniser</button>}
+        <button className="btn icon" title="Changer de dossier" onClick={choose}><FolderInput /></button>
+        <button className="btn icon" title="Ouvrir le dossier" onClick={guard(() => window.pimkey.sync.openDir())}><FolderOpen /></button>
+        <button className="btn ghost icon" title="Arrêter la synchronisation" onClick={stop}><CloudOff /></button>
+      </>
+    ) : <button className="btn" onClick={choose}><FolderInput /> Choisir un dossier…</button>}>
+      Le coffre chiffré est recopié dans un dossier synchronisé (OneDrive, Google Drive, Dropbox, Syncthing…) et fusionné,
+      élément par élément, avec les modifications faites sur vos autres appareils. Le service ne voit qu’un fichier chiffré.
+      {status.dir && <em className="setting-path">{status.dir}</em>}
+      {status.at && !status.error && <em className="setting-sub">Dernière synchronisation : {formatWhen(status.at)}</em>}
+      {status.needPassword && <em className="setting-error">Ce dossier contient un coffre créé sur un autre appareil : rejoignez-le avec son mot de passe maître.</em>}
+      {status.error && <em className="setting-error">Synchronisation impossible : {status.error}</em>}
+    </Setting>
   );
 }
 
@@ -390,6 +443,9 @@ export default function Settings() {
 
         <h2 className="section"><Puzzle /> Navigateur</h2>
         <BrowserExtension />
+
+        <h2 className="section"><Cloud /> Synchronisation</h2>
+        <SyncSetting />
 
         <h2 className="section"><KeyRound /> Mot de passe maître</h2>
         <Setting title="Changer le mot de passe maître" actions={<button className="btn" onClick={() => setModal({ master: true })}>Changer</button>}>

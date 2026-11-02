@@ -14,10 +14,12 @@ const { strength } = require('../shared/strength.mjs');
 const { totp, parseTotp } = require('./totp.cjs');
 const { expiryTime } = require('../shared/expiry.mjs');
 const { siteName, baseDomain, looksLikeHost, androidSite } = require('../shared/sitename.mjs');
+const { mergeEntries, mergeIcons, signature, canon } = require('./sync.cjs');
 
 const scrypt = promisify(crypto.scrypt);
 const FORMAT = 'pimkey-vault';
 const BACKUP_FORMAT = 'pimkey-backup';
+const SYNC_FILE = 'vault.pimkey'; // nom du coffre dans le dossier synchronisé
 // scrypt N = 2^17 : ~0,3 s par essai sur un PC récent, ce qui rend l'attaque par force brute coûteuse
 const KDF = { name: 'scrypt', N: 2 ** 17, r: 8, p: 1 };
 const MIN_MASTER = 8;
@@ -215,7 +217,7 @@ class Vault {
     if (this.exists()) throw new Error('Un coffre existe déjà.');
     checkMaster(password);
     this.dek = crypto.randomBytes(32);
-    this.header = { format: FORMAT, version: 1, ...(await wrapKey(this.dek, password)) };
+    this.header = { format: FORMAT, version: 1, ...(await wrapKey(this.dek, password)), keyAt: Date.now() };
     this.data = { entries: [], icons: {} };
     this.save();
   }
@@ -228,7 +230,7 @@ class Vault {
   load(v, dek) {
     this.data = JSON.parse(open(dek, v.data, 'pimkey-data').toString('utf8'));
     this.data.icons ||= {}; // coffres créés avant les icônes de sites
-    this.header = { format: v.format, version: v.version, kdf: v.kdf, key: v.key, ...(v.hello && { hello: v.hello }) };
+    this.header = { format: v.format, version: v.version, kdf: v.kdf, key: v.key, keyAt: v.keyAt || 0, ...(v.hello && { hello: v.hello }) };
     this.dek = dek;
     this.purgeTrash();
   }
@@ -304,7 +306,8 @@ class Vault {
   async changePassword(current, next) {
     if (!(await this.verify(current))) throw new Error(WRONG);
     checkMaster(next);
-    Object.assign(this.header, await wrapKey(this.dek, next));
+    // keyAt : le mot de passe le plus récent l'emporte sur les autres appareils synchronisés
+    Object.assign(this.header, await wrapKey(this.dek, next), { keyAt: Date.now() });
     this.save();
   }
 
@@ -312,7 +315,13 @@ class Vault {
     if (!this.dek) throw new Error('Le coffre est verrouillé.');
   }
 
+  // onChange : appelé après chaque modification (synchronisation à prévoir), pas après une fusion
   save() {
+    this.write();
+    this.onChange?.();
+  }
+
+  write() {
     this.ensureUnlocked();
     const data = seal(this.dek, Buffer.from(JSON.stringify(this.data), 'utf8'), 'pimkey-data');
     writeAtomic(this.file, JSON.stringify({ ...this.header, data }, null, 2));
@@ -448,7 +457,7 @@ class Vault {
   trashEntries(ids) {
     const list = ids.map((id) => this.find(id));
     const now = Date.now();
-    for (const e of list) e.deletedAt = now;
+    for (const e of list) Object.assign(e, { deletedAt: now, metaAt: now });
     this.save();
   }
 
@@ -462,6 +471,7 @@ class Vault {
     for (const e of list) {
       delete e.deletedAt;
       e.updatedAt = now;
+      e.metaAt = now;
     }
     this.save();
   }
@@ -501,7 +511,7 @@ class Vault {
   }
 
   setFavorite(id, favorite) {
-    this.find(id).favorite = !!favorite;
+    Object.assign(this.find(id), { favorite: !!favorite, metaAt: Date.now() });
     this.save();
   }
 
@@ -695,8 +705,141 @@ class Vault {
   removeAttachment(entryId, attId) {
     const e = this.find(entryId);
     e.attachments = (e.attachments || []).filter((a) => a.id !== attId);
+    e.updatedAt = Date.now();
     fs.rmSync(this.attFile(attId), { force: true });
     this.save();
+  }
+
+  // ---------- Synchronisation ----------
+  // Le dossier synchronisé (OneDrive…) contient vault.pimkey, chiffré par la même clé des données que ce coffre, et
+  // attachments/. Ni Windows Hello (lié au TPM de cet ordinateur), ni les navigateurs appairés, ni la base de fusion
+  // n'y figurent. Le coffre local reste la référence : Pimkey marche sans le dossier, et fusionne dès qu'il le retrouve.
+
+  readRemote(dir) {
+    const file = path.join(dir, SYNC_FILE);
+    if (!fs.existsSync(file)) return null;
+    const v = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (v.format !== FORMAT) throw new Error("Le dossier contient un fichier vault.pimkey qui n'est pas un coffre Pimkey.");
+    return v;
+  }
+
+  // Données d'un coffre du dossier, ou null s'il n'est pas chiffré par la même clé (créé sur un autre appareil)
+  openRemote(v) {
+    try {
+      const d = JSON.parse(open(this.dek, v.data, 'pimkey-data').toString('utf8'));
+      return { entries: (d.entries || []).filter((e) => typeof e?.id === 'string' && TYPES[e.type]), icons: d.icons || {} };
+    } catch {
+      return null;
+    }
+  }
+
+  // Fusionne ce coffre et celui du dossier, puis écrit le résultat des deux côtés (le dossier seulement s'il change).
+  // Erreur SYNC_PASSWORD : le dossier contient un coffre créé ailleurs, à rejoindre avec son mot de passe (joinSync).
+  // icons : false quand les icônes des sites sont désactivées (celles du dossier restent pour les autres appareils).
+  // → { changed (éléments modifiés ici), conflicts, passwordChanged (mot de passe maître changé sur un autre appareil) }
+  syncWith(dir, { icons = true } = {}) {
+    this.ensureUnlocked();
+    dir = path.resolve(dir);
+    const own = path.resolve(this.dir).toLowerCase();
+    if (dir.toLowerCase() === own || dir.toLowerCase().startsWith(own + path.sep)) {
+      throw new Error('Choisissez un dossier en dehors du dossier des données de Pimkey.');
+    }
+    const remAtt = path.join(dir, 'attachments');
+    fs.mkdirSync(remAtt, { recursive: true });
+    const remote = this.readRemote(dir);
+    const sources = [];
+    if (remote) {
+      const d = this.openRemote(remote);
+      if (!d) throw new Error('SYNC_PASSWORD');
+      sources.push(d);
+    }
+    // Copies laissées par le service quand deux appareils écrivent en même temps (« vault-PC.pimkey »,
+    // « vault (1).pimkey », « vault.sync-conflict-….pimkey ») : fusionnées puis effacées
+    const extras = [];
+    for (const f of fs.readdirSync(dir)) {
+      if (!/^vault.+\.pimkey$/i.test(f) || f.toLowerCase() === SYNC_FILE) continue;
+      try {
+        const d = this.openRemote(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+        if (d) { sources.push(d); extras.push(f); }
+      } catch {}
+    }
+
+    const key = dir.toLowerCase();
+    const base = this.data.sync?.dir === key ? this.data.sync.base : {};
+    const before = canon({ entries: this.data.entries, icons: this.data.icons, sync: this.data.sync, header: this.header });
+    const refs = (list) => new Set(list.flatMap((e) => (e.attachments || []).map((a) => a.id)));
+    const localRefs = refs(this.data.entries);
+    const remoteRefs = refs(sources.flatMap((d) => d.entries));
+    let entries = this.data.entries;
+    let iconMap = icons ? this.data.icons : {};
+    let conflicts = 0;
+    for (const d of sources) {
+      const m = mergeEntries(entries, d.entries, base);
+      entries = m.entries;
+      conflicts += m.conflicts;
+      if (icons) iconMap = mergeIcons(iconMap, d.icons);
+    }
+
+    // Mot de passe maître : le plus récemment choisi (même clé des données, seule son enveloppe change)
+    let passwordChanged = false;
+    if (remote && (remote.keyAt || 0) > (this.header.keyAt || 0)) {
+      Object.assign(this.header, { kdf: remote.kdf, key: remote.key, keyAt: remote.keyAt });
+      passwordChanged = true;
+    }
+
+    // Pièces jointes : chiffrées par la même clé, copiées telles quelles là où elles manquent ; d'abord les fichiers,
+    // puis le coffre qui les référence (un autre appareil ne doit jamais lire une référence sans son fichier)
+    const kept = refs(entries);
+    for (const id of kept) {
+      const lf = this.attFile(id);
+      const rf = path.join(remAtt, `${id}.bin`);
+      const hasL = fs.existsSync(lf);
+      const hasR = fs.existsSync(rf);
+      if (!hasL && hasR) writeAtomic(lf, fs.readFileSync(rf));
+      else if (hasL && !hasR) writeAtomic(rf, fs.readFileSync(lf));
+    }
+
+    const out = { entries, icons: icons ? iconMap : sources[0]?.icons || {} };
+    const header = { format: FORMAT, version: this.header.version, kdf: this.header.kdf, key: this.header.key, keyAt: this.header.keyAt || 0 };
+    const unchanged = remote && !extras.length && canon(sources[0]) === canon(out)
+      && canon({ format: remote.format, version: remote.version, kdf: remote.kdf, key: remote.key, keyAt: remote.keyAt || 0 }) === canon(header);
+    if (!unchanged) {
+      const data = seal(this.dek, Buffer.from(JSON.stringify(out), 'utf8'), 'pimkey-data');
+      writeAtomic(path.join(dir, SYNC_FILE), JSON.stringify({ ...header, data }, null, 2));
+    }
+    for (const f of extras) fs.rmSync(path.join(dir, f), { force: true });
+    // Fichiers des pièces jointes supprimées ailleurs (ou ici) : effacés des deux côtés
+    for (const id of localRefs) if (!kept.has(id)) fs.rmSync(this.attFile(id), { force: true });
+    for (const id of remoteRefs) if (!kept.has(id)) fs.rmSync(path.join(remAtt, `${id}.bin`), { force: true });
+
+    const changed = canon(this.data.entries) !== canon(entries) || canon(this.data.icons) !== canon(iconMap);
+    Object.assign(this.data, { entries, icons: iconMap, sync: { dir: key, base: Object.fromEntries(entries.map((e) => [e.id, signature(e)])) } });
+    if (canon({ entries: this.data.entries, icons: this.data.icons, sync: this.data.sync, header: this.header }) !== before) this.write();
+    return { changed, conflicts, passwordChanged };
+  }
+
+  // Rejoindre le coffre d'un dossier créé sur un autre appareil : ses éléments et ceux de ce coffre sont réunis, et ce
+  // coffre adopte sa clé des données et son mot de passe maître. Windows Hello, lié à l'ancienne clé, est à réactiver.
+  async joinSync(dir, password, opts) {
+    this.ensureUnlocked();
+    const remote = this.readRemote(dir);
+    if (!remote) return this.syncWith(dir, opts);
+    const dek = await unwrapKey(remote, password);
+    if (crypto.timingSafeEqual(dek, this.dek)) {
+      dek.fill(0);
+      return this.syncWith(dir, opts);
+    }
+    // Pièces jointes de ce coffre rechiffrées par la nouvelle clé : écrites à côté, puis remplacées une fois
+    // le coffre enregistré avec cette clé
+    const atts = this.data.entries.flatMap((e) => e.attachments || []).filter((a) => fs.existsSync(this.attFile(a.id)));
+    for (const a of atts) writeAtomic(this.attFile(a.id) + '.new', sealBin(dek, openBin(this.dek, fs.readFileSync(this.attFile(a.id)), a.id), a.id));
+    this.dek.fill(0);
+    this.dek = dek;
+    this.header = { format: FORMAT, version: remote.version, kdf: remote.kdf, key: remote.key, keyAt: remote.keyAt || 0 };
+    delete this.data.sync;
+    this.write();
+    for (const a of atts) fs.renameSync(this.attFile(a.id) + '.new', this.attFile(a.id));
+    return { ...this.syncWith(dir, opts), changed: true, joined: true };
   }
 
   // ---------- Sauvegarde ----------

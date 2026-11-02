@@ -167,6 +167,7 @@ function createTray() {
 
 function lock(reason) {
   if (!vault.unlocked) return;
+  if (syncTimer) runSync(); // dernière modification envoyée avant d'oublier la clé
   vault.lock();
   bridge?.dropSessions();
   pendingImport = null;
@@ -294,6 +295,66 @@ function backupStatus() {
   let last = null;
   try { last = files.length ? fs.statSync(path.join(dir, files.at(-1))).mtimeMs : null; } catch {}
   return { dir, custom: !!settings.data.backupDir, count: files.length, last, error: autoStatus.error };
+}
+
+// ---------- Synchronisation ----------
+// Coffre recopié dans un dossier synchronisé (OneDrive, Google Drive, Dropbox, Syncthing…) et fusionné, élément par
+// élément, avec celui des autres appareils (vault.syncWith) : peu après chaque modification, au déverrouillage, et
+// quand le fichier du dossier change. Coffre verrouillé, rien ne se fait : la fusion attend le déverrouillage.
+
+const SYNC_IDLE = { at: null, error: null, needPassword: false };
+let syncState = { ...SYNC_IDLE };
+let syncTimer = null;
+let syncSeen = null; // état du fichier du dossier lors de la dernière fusion
+
+const syncDir = () => settings.data.syncDir;
+const syncStatus = () => ({ dir: syncDir(), ...syncState });
+
+function remoteStamp() {
+  try {
+    const s = fs.statSync(path.join(syncDir(), 'vault.pimkey'));
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function runSync() {
+  clearTimeout(syncTimer);
+  syncTimer = null;
+  if (!syncDir() || !vault.unlocked) return;
+  let notice = null;
+  try {
+    const r = vault.syncWith(syncDir(), { icons: settings.data.siteIcons });
+    syncState = { ...SYNC_IDLE, at: Date.now() };
+    if (r.changed) send('entries', vault.list());
+    if (r.passwordChanged) notice = 'Le mot de passe maître a été changé sur un autre appareil : utilisez désormais le nouveau.';
+    if (r.conflicts) {
+      notice = `${r.conflicts > 1 ? `${r.conflicts} éléments modifiés` : '1 élément modifié'} sur deux appareils à la fois : `
+        + 'la version la plus récente est gardée, l’autre porte la mention « (conflit) ».';
+    }
+  } catch (e) {
+    const needPassword = e.message === 'SYNC_PASSWORD';
+    syncState = { ...syncState, needPassword, error: needPassword ? null : e.message };
+  }
+  syncSeen = remoteStamp();
+  send('sync', { ...syncStatus(), notice });
+}
+
+const scheduleSync = () => {
+  if (!syncDir()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, 2000);
+};
+
+// Changement venu d'un autre appareil : le service de synchronisation réécrit le fichier du dossier
+function watchSync() {
+  let ticks = 0;
+  setInterval(() => {
+    if (!syncDir() || !vault.unlocked || syncTimer) return;
+    // Toutes les 5 minutes, fusion même sans changement visible (copies en conflit laissées par le service)
+    if (remoteStamp() !== syncSeen || ++ticks % 20 === 0) runSync();
+  }, 15e3);
 }
 
 // ---------- Icônes ----------
@@ -528,6 +589,7 @@ function setupIpc() {
   });
   // Après tout déverrouillage : icônes manquantes, copie de l'état d'avant les modifications du jour, rappels
   const afterUnlock = () => {
+    setTimeout(runSync, 300);
     setTimeout(refreshSiteIcons, 1500);
     setTimeout(() => autoBackup(), 500);
     setTimeout(notifyExpiries, 3000);
@@ -835,6 +897,48 @@ function setupIpc() {
     return shell.openPath(backupDir());
   });
 
+  // Synchronisation : dossier choisi dans une boîte de dialogue (jamais une adresse venue de l'interface)
+  handle('sync:status', () => syncStatus());
+  handle('sync:setDir', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Dossier de synchronisation (OneDrive, Google Drive, Dropbox…)',
+      defaultPath: syncDir() || app.getPath('home'),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (r.canceled) return null;
+    const dir = r.filePaths[0];
+    const own = path.resolve(app.getPath('userData')).toLowerCase();
+    if (path.resolve(dir).toLowerCase() === own || path.resolve(dir).toLowerCase().startsWith(own + path.sep)) {
+      throw new Error('Choisissez un dossier en dehors du dossier des données de Pimkey.');
+    }
+    settings.set({ syncDir: dir });
+    syncState = { ...SYNC_IDLE };
+    runSync();
+    return syncStatus();
+  });
+  // Le dossier contient un coffre créé sur un autre appareil : on le rejoint avec son mot de passe maître
+  handle('sync:join', async (password) => {
+    if (!password) throw new Error('MASTER_REQUIRED');
+    if (!syncDir()) throw new Error('Choisissez d’abord un dossier de synchronisation.');
+    await vault.joinSync(syncDir(), password, { icons: settings.data.siteIcons });
+    syncState = { ...SYNC_IDLE, at: Date.now() };
+    syncSeen = remoteStamp();
+    return { status: syncStatus(), list: vault.list() };
+  });
+  handle('sync:now', () => {
+    runSync();
+    if (syncState.error) throw new Error(`Synchronisation impossible : ${syncState.error}`);
+    return syncStatus();
+  });
+  handle('sync:disable', () => {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+    settings.set({ syncDir: null });
+    syncState = { ...SYNC_IDLE };
+    return syncStatus();
+  });
+  handle('sync:openDir', () => shell.openPath(syncDir()));
+
   handle('bridge:status', () => bridgeStatus());
   handle('bridge:enable', async (on) => {
     settings.set({ browserExtension: !!on });
@@ -853,7 +957,7 @@ function setupIpc() {
   handle('settings:get', () => settings.data);
   handle('settings:set', (patch) => {
     const before = settings.data.siteIcons;
-    const { backupDir: _, ...rest } = patch || {};
+    const { backupDir: _, syncDir: __, ...rest } = patch || {};
     const data = settings.set(rest);
     if (winAlive()) win.setContentProtection(hideFromCapture());
     // Icônes désactivées : celles déjà récupérées sont effacées du coffre
@@ -879,17 +983,20 @@ app.whenReady().then(() => {
   app.setAppUserModelId('fr.yalma.pimkey');
   const dir = app.getPath('userData');
   vault = new Vault(dir);
+  vault.onChange = scheduleSync;
   settings = new Settings(dir);
   setupIpc();
   createWindow();
   createTray();
   watchIdle();
+  watchSync();
   updater = setupUpdates();
   if (settings.data.browserExtension) startBridge();
 });
 
 app.on('will-quit', () => {
   bridge?.stop();
+  if (syncTimer) runSync();
   clearClipboard();
   vault?.lock();
 });
