@@ -1,0 +1,54 @@
+{
+  "login": {
+    "label": "Identifiant",
+    "plural": "Identifiants",
+    "subtitle": "username",
+    "fields": [
+      { "key": "username", "label": "Identifiant ou e-mail", "kind": "text", "copy": true },
+      { "key": "password", "label": "Mot de passe", "kind": "password", "secret": true, "copy": true, "history": true },
+      { "key": "url", "label": "Site ou service", "kind": "url", "placeholder": "https://…" },
+      { "key": "totp", "label": "Clé 2FA (TOTP)", "kind": "totp", "secret": true, "mono": true, "placeholder": "Clé secrète ou lien otpauth://…" },
+      { "key": "notes", "label": "Notes", "kind": "textarea" }
+    ]
+  },
+  "identity": {
+    "label": "Document d'identité",
+    "plural": "Documents d'identité",
+    "subtitle": "docType",
+    "fields": [
+      { "key": "docType", "label": "Type de document", "kind": "select",
+        "options": ["Carte d'identité", "Passeport", "Permis de conduire", "Titre de séjour", "Carte Vitale", "Autre"] },
+      { "key": "lastName", "label": "Nom", "kind": "text", "copy": true },
+      { "key": "firstName", "label": "Prénom(s)", "kind": "text", "copy": true },
+      { "key": "number", "label": "Numéro du document", "kind": "text", "copy": true, "mono": true },
+      { "key": "birthDate", "label": "Date de naissance", "kind": "date" },
+      { "key": "issuedAt", "label": "Délivré le", "kind": "date" },
+      { "key": "expiresAt", "label": "Expire le", "kind": "date", "expiry": true },
+      { "key": "authority", "label": "Délivré par", "kind": "text" },
+      { "key": "country", "label": "Pays", "kind": "text" },
+      { "key": "notes", "label": "Notes", "kind": "textarea" }
+    ]
+  },
+  "card": {
+    "label": "Carte bancaire",
+    "plural": "Cartes bancaires",
+    "subtitle": "number",
+    "fields": [
+      { "key": "holder", "label": "Titulaire", "kind": "text", "copy": true },
+      { "key": "number", "label": "Numéro de carte", "kind": "password", "secret": true, "copy": true, "mono": true, "hint": "last4" },
+      { "key": "expiry", "label": "Expiration (MM/AA)", "kind": "text", "placeholder": "MM/AA", "copy": true },
+      { "key": "cvv", "label": "Cryptogramme (CVV)", "kind": "password", "secret": true, "copy": true, "mono": true },
+      { "key": "pin", "label": "Code PIN", "kind": "password", "secret": true, "mono": true },
+      { "key": "bank", "label": "Banque", "kind": "text" },
+      { "key": "notes", "label": "Notes", "kind": "textarea" }
+    ]
+  },
+  "note": {
+    "label": "Note sécurisée",
+    "plural": "Notes sécurisées",
+    "subtitle": null,
+    "fields": [
+      { "key": "content", "label": "Contenu", "kind": "textarea", "rows": 10, "copy": true }
+    ]
+  }
+}

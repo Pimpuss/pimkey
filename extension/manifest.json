@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Pimkey",
+  "version": "0.1.0",
+  "description": "Remplit vos identifiants depuis Pimkey, le coffre-fort local de votre PC, après un clic.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvmvLJFB3Enbxtdppn4Pz73S6z3xA9yyPjvfZ3xe5FJ7YhELIloBjWHk6yF4H7u34npnmINUBUZORNVqth0uDsYi5cPrwyFcQhdyulxGn8C8VZPyu+xrQENSVVE9bC0OrjOSXvcyc4dCme+RWBRrxZKbur0znAVj1sIHzZhs1G0UsJcygC9qd/ujbcITH7hkdawMNEL7JR/+uWC0lwt5d3Qv87ko4+EeIWQhMld5p8mbhOP0naJHG3Z9JMJTGVfKZcd2g/PMZiP07G6Expq81JKGotGrJYjBx7PTUxM6bHn1xMc/olZrJT1GUdArr1JevIfA42Ld5ybSIangrS8lmkQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["nativeMessaging", "storage", "webNavigation"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_title": "Pimkey",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png" }
+  },
+  "options_ui": { "page": "pair.html", "open_in_tab": true },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" }
+}
