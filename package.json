@@ -1,7 +1,7 @@
 {
   "name": "pimkey",
   "productName": "Pimkey",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Coffre-fort local : mots de passe, documents d'identité, cartes et notes, chiffrés par un mot de passe maître",
   "private": true,
   "main": "electron/main.cjs",
