@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Clock, Copy as Reused, ShieldAlert, ShieldCheck, ShieldQuestion, TriangleAlert } from 'lucide-react';
+import { ChevronDown, Clock, Copy as Reused, ShieldAlert, ShieldCheck, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import { Avatar } from '../components/ui.jsx';
 import { useApp } from '../lib/context.jsx';
 import { formatStamp, subtitle } from '../lib/types.js';
@@ -39,12 +39,24 @@ function Row({ entry, note }) {
   );
 }
 
-function Section({ icon: Icon, title, text, kind, children }) {
+// Sections repliées, mémorisées d'une visite à l'autre (simple confort : rien de grave si le stockage échoue)
+const FOLDED_KEY = 'pimkey.audit.folded';
+function readFolded() {
+  try { return JSON.parse(localStorage.getItem(FOLDED_KEY)) || {}; } catch { return {}; }
+}
+
+function Section({ id, icon: Icon, title, count, text, kind, folded, onToggle, children }) {
   return (
-    <section className="audit-section">
-      <h2 className={`section ${kind || ''}`}><Icon /> {title}</h2>
-      {text && <p className="audit-text">{text}</p>}
-      <div className="audit-list">{children}</div>
+    <section className={`audit-section ${folded ? 'folded' : ''}`}>
+      <h2 className={`section ${kind || ''}`}>
+        <button type="button" className="audit-toggle" onClick={() => onToggle(id)} aria-expanded={!folded}>
+          <ChevronDown className="audit-chevron" />
+          <Icon /> {title}
+          <span className="audit-count">{count.toLocaleString('fr-FR')}</span>
+        </button>
+      </h2>
+      {!folded && text && <p className="audit-text">{text}</p>}
+      {!folded && <div className="audit-list">{children}</div>}
     </section>
   );
 }
@@ -52,6 +64,13 @@ function Section({ icon: Icon, title, text, kind, children }) {
 export default function Audit() {
   const { entries, setEntries, guard, toast } = useApp();
   const [busy, setBusy] = useState(false);
+  const [folded, setFolded] = useState(readFolded);
+  const toggle = (id) => setFolded((f) => {
+    const next = { ...f, [id]: !f[id] };
+    try { localStorage.setItem(FOLDED_KEY, JSON.stringify(next)); } catch { /* sans mémorisation */ }
+    return next;
+  });
+  const fold = (id) => ({ id, folded: !!folded[id], onToggle: toggle });
   const { logins, pwned, reused, weak, old } = useMemo(() => auditIssues(entries), [entries]);
   const checkedAt = logins.reduce((min, e) => (e.audit.checkedAt && (!min || e.audit.checkedAt < min) ? e.audit.checkedAt : min), null);
   const unchecked = logins.filter((e) => e.audit.pwned === null).length;
@@ -76,7 +95,8 @@ export default function Audit() {
   const clean = !pwned.length && !reused.length && !weak.length && !old.length;
 
   return (
-    <div className="page">
+    <div className="page audit-page">
+      <div className="audit-head">
       <div className="page-head"><h1>Santé des mots de passe</h1></div>
       <p className="audit-text">
         {logins.length ? `${plural(logins.length, 'identifiant analysé', 'identifiants analysés')} sur cet ordinateur.` : 'Aucun identifiant avec mot de passe pour le moment.'}
@@ -109,7 +129,9 @@ export default function Audit() {
           </button>
         </div>
       </div>
+      </div>
 
+      <div className="audit-scroll">
       {clean && logins.length > 0 && (
         <div className="empty-state audit-clean">
           <ShieldCheck />
@@ -119,14 +141,14 @@ export default function Audit() {
       )}
 
       {pwned.length > 0 && (
-        <Section icon={ShieldAlert} kind="danger" title="Trouvés dans une fuite"
+        <Section {...fold('pwned')} count={pwned.length} icon={ShieldAlert} kind="danger" title="Trouvés dans une fuite"
           text="Ces mots de passe circulent dans des fuites de données : changez-les en priorité, sur chaque site qui les utilise.">
           {pwned.map((e) => <Row key={e.id} entry={e} note={`vu ${e.audit.pwned.toLocaleString('fr-FR')} fois`} />)}
         </Section>
       )}
 
       {reused.length > 0 && (
-        <Section icon={Reused} title="Réutilisés"
+        <Section {...fold('reused')} count={reused.reduce((n, g) => n + g.length, 0)} icon={Reused} title="Réutilisés"
           text="Un même mot de passe sur plusieurs sites : s’il fuit sur l’un, les autres sont exposés. Donnez à chacun le sien.">
           {reused.map((g) => (
             <div key={g[0].audit.reused} className="audit-group">
@@ -138,16 +160,17 @@ export default function Audit() {
       )}
 
       {weak.length > 0 && (
-        <Section icon={TriangleAlert} title="Faibles" text="Trop courts ou trop simples : le générateur en propose de solides.">
+        <Section {...fold('weak')} count={weak.length} icon={TriangleAlert} title="Faibles" text="Trop courts ou trop simples : le générateur en propose de solides.">
           {weak.map((e) => <Row key={e.id} entry={e} />)}
         </Section>
       )}
 
       {old.length > 0 && (
-        <Section icon={Clock} title="Inchangés depuis plus d’un an">
+        <Section {...fold('old')} count={old.length} icon={Clock} title="Inchangés depuis plus d’un an">
           {old.map((e) => <Row key={e.id} entry={e} note={`depuis le ${new Date(e.audit.since).toLocaleDateString('fr-FR')}`} />)}
         </Section>
       )}
+      </div>
     </div>
   );
 }
