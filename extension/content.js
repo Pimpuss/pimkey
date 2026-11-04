@@ -304,6 +304,8 @@
     schedule();
   }
 
+  // Choix dans la liste : remplit puis connecte directement. Connexion en plusieurs étapes (identifiant, puis mot de
+  // passe, puis code 2FA) : l'extension retient le choix une minute pour remplir et valider l'étape suivante.
   async function choose(entry, anchor, allowInsecure = false) {
     if (entry.insecure && !allowInsecure) return confirmInsecure(entry, () => choose(entry, anchor, true));
     const r = await send({ type: 'fill', id: entry.id, allowInsecure });
@@ -313,6 +315,14 @@
     }
     closeMenu();
     fill(r, anchor);
+    const f = loginFields(anchor);
+    if (f.password?.value) {
+      if (r.totp && !f.otp?.value) await send({ type: 'startLogin', id: entry.id, stage: 'otp', allowInsecure });
+      submit(f.password);
+    } else if (f.username?.value) {
+      if (r.password) await send({ type: 'startLogin', id: entry.id, stage: 'password', allowInsecure });
+      submit(f.username);
+    }
   }
 
   async function fillOtp(entry) {
@@ -324,6 +334,56 @@
     }
     closeMenu();
     setValue(anchor, r.code);
+    submit(anchor);
+  }
+
+  // ---------- Connexion directe ----------
+
+  // Boutons à ne jamais cliquer : connexion par un autre service, mot de passe oublié, inscription…
+  const NOT_SUBMIT = /google|facebook|apple|microsoft|github|linkedin|twitter|sso|passkey|cl[ée] d.acc[eè]s|oubli|forgot|reset|cr[ée]er|create|sign ?up|inscri|register|annuler|cancel|retour|back/i;
+  const later = (ms) => new Promise((res) => setTimeout(res, ms));
+  const label = (b) => `${b.textContent} ${b.value || ''} ${b.getAttribute('aria-label') || ''} ${b.title || ''}`.slice(0, 200);
+
+  // Bouton qui valide le formulaire du champ : d'abord un vrai bouton d'envoi, sinon un bouton au libellé explicite,
+  // le premier placé après le champ. disabled : bouton trouvé mais désactivé (la page n'a pas encore vu la saisie).
+  function submitButton(field) {
+    const all = [...scopeOf(field).querySelectorAll('button, input[type=submit], input[type=image], [role=button]')]
+      .filter((b) => b !== field && visible(b) && before(field, b) && !NOT_SUBMIT.test(label(b)));
+    const typed = all.filter((b) => b.matches('input[type=submit], input[type=image], button[type=submit]') || (b.tagName === 'BUTTON' && b.form && !b.getAttribute('type')));
+    const pick = typed[0] || all.find((b) => SUBMIT_TEXT.test(label(b)));
+    if (!pick) return { button: null };
+    return { button: pick, disabled: pick.disabled || pick.getAttribute('aria-disabled') === 'true' };
+  }
+
+  async function submit(field) {
+    // Laisse à l'appli de la page le temps de prendre la saisie (état React, validation…)
+    for (let i = 0; i < 8; i++) {
+      await later(i ? 150 : 60);
+      if (!field.isConnected) return;
+      // Champ obligatoire encore vide (captcha, case à cocher…) : l'utilisateur termine lui-même
+      if (inputs(scopeOf(field)).some((x) => x.required && !x.value && x.type !== 'checkbox')) return;
+      const { button, disabled } = submitButton(field);
+      if (button && !disabled) return button.click();
+      if (!button) break;
+    }
+    const form = field.form || field.closest('form');
+    if (form && !submitButton(field).button) form.requestSubmit();
+  }
+
+  // Étape suivante d'une connexion commencée depuis la liste : champ mot de passe ou code 2FA vide qui apparaît.
+  // Une seule demande par champ ; l'extension ne répond que si un choix récent attend, pour ce site et cet onglet.
+  const asked = new WeakSet();
+  async function resumeLogin() {
+    const field = [...document.querySelectorAll('input')].find((x) => !asked.has(x) && !x.value
+      && (kindOf(x) === 'otp' || (isPassword(x) && kindOf(x) === 'login')));
+    if (!field) return;
+    asked.add(field);
+    const r = await send({ type: 'resumeLogin', otp: isOtp(field) });
+    if (!field.isConnected || field.value) return;
+    if (r.code) setValue(field, r.code);
+    else if (r.creds) fill(r.creds, field);
+    else return;
+    submit(field);
   }
 
   document.addEventListener('focusin', (e) => {
@@ -339,6 +399,7 @@
 
   // Au chargement et quand la page change (applis web) : icône sur le premier champ de connexion visible
   function scan() {
+    resumeLogin();
     if (target && target.isConnected && kindOf(target)) return schedule();
     target = null;
     const active = document.activeElement;

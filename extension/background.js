@@ -7,6 +7,7 @@ import { LinkError, Session, showPimkey } from './lib/link.js';
 const IDLE_CLOSE = 60e3; // port natif fermé après une minute sans demande
 const OFFER_TTL = 2 * 60e3; // proposition d'enregistrer un identifiant saisi
 const USER_TTL = 5 * 60e3; // identifiant saisi seul (connexion en deux étapes : identifiant, puis mot de passe)
+const LOGIN_TTL = 60e3; // connexion directe en plusieurs étapes : étape suivante attendue
 
 // ---------- Session avec Pimkey ----------
 
@@ -77,6 +78,32 @@ async function fillTab(tabId, id, allowInsecure) {
     }
   }
   return { filled };
+}
+
+// ---------- Connexion directe en plusieurs étapes ----------
+// Après un choix dans la liste (vrai clic), la page passe à l'étape suivante (mot de passe, puis code 2FA) : le choix
+// est retenu une minute pour cet onglet et ce site, et ne sert qu'une fois par étape. Rien de secret n'est gardé : seul
+// l'identifiant de l'élément, Pimkey redonne les valeurs à la demande.
+
+const loginKey = (tabId) => `login:${tabId}`;
+const STAGES = ['password', 'otp'];
+
+async function startLogin(s, { id, stage, allowInsecure }) {
+  const site = siteOfUrl(s.url);
+  if (typeof id !== 'string' || !STAGES.includes(stage) || !site) return {};
+  await chrome.storage.session.set({ [loginKey(s.tab.id)]: { id, stage, site, allowInsecure: !!allowInsecure, at: Date.now() } });
+  return {};
+}
+
+async function resumeLogin(s, { otp }) {
+  const key = loginKey(s.tab.id);
+  const p = (await chrome.storage.session.get(key))[key];
+  if (!p || Date.now() - p.at > LOGIN_TTL || p.site !== siteOfUrl(s.url) || p.stage !== (otp ? 'otp' : 'password')) return {};
+  await chrome.storage.session.remove(key);
+  if (otp) return { code: (await request('totp', { id: p.id, url: s.url })).code };
+  const r = await request('fill', { id: p.id, url: s.url, allowInsecure: p.allowInsecure });
+  if (r.totp) await chrome.storage.session.set({ [key]: { ...p, stage: 'otp', at: Date.now() } });
+  return { creds: { username: r.username, password: r.password } };
 }
 
 // ---------- Enregistrement d'un identifiant saisi ----------
@@ -153,7 +180,7 @@ async function answerOffer(tabId, action) {
   return {};
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([offerKey(tabId), userKey(tabId)]));
+chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([offerKey(tabId), userKey(tabId), loginKey(tabId)]));
 
 // ---------- Messages ----------
 
@@ -167,6 +194,8 @@ const FROM_PAGE = {
     return { username: r.username, password: r.password, totp: r.totp };
   },
   otp: async (m, s) => ({ code: (await request('totp', { id: m.id, url: s.url })).code }),
+  startLogin: (m, s) => startLogin(s, m),
+  resumeLogin: (m, s) => resumeLogin(s, m),
   captured: (m, s) => captured(s, m),
   // Identifiant seul (première étape d'une connexion en deux temps), gardé pour la proposition d'enregistrement
   capturedUser: async (m, s) => {
