@@ -15,12 +15,64 @@ $ProgressPreference = 'SilentlyContinue'
 trap { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; "ERR:" + ($e.Message -replace '\\s+', ' ').Trim(); exit 1 }
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' } | Select-Object -First 1
-function Await($op, [Type]$type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+$Focus = $false
+function Await($op, [Type]$type) {
+  $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
+  $front = -not $Focus
+  while (-not $t.Wait(100)) { if (-not $front) { $front = [Pimkey.HelloPrompt]::Front() } }
+  $t.Result
+}
 $null = [Windows.Security.Credentials.KeyCredentialManager, Windows.Security.Credentials, ContentType = WindowsRuntime]
 $null = [Windows.Security.Cryptography.CryptographicBuffer, Windows.Security.Cryptography, ContentType = WindowsRuntime]
 $KCM = [Windows.Security.Credentials.KeyCredentialManager]
 $CB = [Windows.Security.Cryptography.CryptographicBuffer]
 $WRB = [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions]
+`;
+
+// La fenêtre Windows Hello appartient au processus PowerShell, caché et pas au premier plan : Windows l'ouvre
+// derrière Pimkey. On la cherche pendant l'attente et on la passe devant (en s'attachant au fil de la fenêtre active,
+// seul moyen accepté par Windows pour un processus qui n'a pas le premier plan), une seule fois : après, l'utilisateur
+// reste libre de changer de fenêtre. Elle n'a pas d'icône non plus : on lui donne celle de Pimkey (barre des tâches).
+const psString = (s) => `'${String(s).replace(/'/g, "''")}'`;
+const focusScript = (icon) => `
+try {
+Add-Type -Namespace Pimkey -Name HelloPrompt -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
+[DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+[DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+[DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+[DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern uint ExtractIconEx(string file, int index, out IntPtr big, out IntPtr small, uint n);
+[DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
+static IntPtr bigIcon, smallIcon;
+public static void LoadIcon(string file) { ExtractIconEx(file, 0, out bigIcon, out smallIcon, 1); }
+static void SetIcon(IntPtr h, int kind, IntPtr icon) {
+  IntPtr r;
+  if (icon != IntPtr.Zero) SendMessageTimeout(h, 0x80 /* WM_SETICON */, (IntPtr)kind, icon, 2 /* SMTO_ABORTIFHUNG */, 200, out r);
+}
+public static bool Front() {
+  IntPtr h = IntPtr.Zero;
+  do h = FindWindowEx(IntPtr.Zero, h, "Credential Dialog Xaml Host", null);
+  while (h != IntPtr.Zero && !IsWindowVisible(h));
+  if (h == IntPtr.Zero) return false;
+  SetIcon(h, 1 /* ICON_BIG */, bigIcon);
+  SetIcon(h, 0 /* ICON_SMALL */, smallIcon);
+  IntPtr fg = GetForegroundWindow();
+  if (fg == h) return true;
+  uint me = GetCurrentThreadId(), other = GetWindowThreadProcessId(fg, IntPtr.Zero);
+  bool attached = other != 0 && other != me && AttachThreadInput(me, other, true);
+  BringWindowToTop(h);
+  SetForegroundWindow(h);
+  if (attached) AttachThreadInput(me, other, false);
+  return GetForegroundWindow() == h;
+}
+'@
+$Focus = $true
+${icon ? `[Pimkey.HelloPrompt]::LoadIcon(${psString(icon)})` : ''}
+} catch { }
 `;
 
 // Message lisible tiré du CLIXML de stderr, si PowerShell a planté avant le trap
@@ -61,13 +113,14 @@ const explain = (e) => { throw new Error(MESSAGES[e.message] || `Windows Hello :
 
 const isSupported = () => run(`"OK:" + (Await ($KCM::IsSupportedAsync()) ([bool]))`, 20000).then((v) => v === 'True', () => false);
 
-// Signe le défi (base64) ; create : crée d'abord la clé (remplace l'ancienne). → signature (Buffer)
-function sign(challenge, create = false) {
+// Signe le défi (base64) ; create : crée d'abord la clé (remplace l'ancienne) ; icon : fichier .exe ou .ico dont
+// l'icône est donnée à la fenêtre Hello. → signature (Buffer)
+function sign(challenge, create = false, icon = null) {
   if (!/^[A-Za-z0-9+/=]+$/.test(challenge)) return Promise.reject(new Error('Défi invalide.'));
   const open = create
     ? `Await ($KCM::RequestCreateAsync('${NAME}', [Windows.Security.Credentials.KeyCredentialCreationOption]::ReplaceExisting)) ([Windows.Security.Credentials.KeyCredentialRetrievalResult])`
     : `Await ($KCM::OpenAsync('${NAME}')) ([Windows.Security.Credentials.KeyCredentialRetrievalResult])`;
-  return run(`
+  return run(`${focusScript(icon)}
 $r = ${open}
 if ($r.Status -ne 'Success') { "ERR:$($r.Status)"; exit }
 $buf = $WRB::AsBuffer([Convert]::FromBase64String('${challenge}'))

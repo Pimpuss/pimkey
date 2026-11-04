@@ -11,6 +11,8 @@ const { fetchSiteIcon, isPrivateHost } = require('./favicon.cjs');
 const { readCsv } = require('./importer.cjs');
 const { Bridge, register, unregister, registration, EXTENSION_IDS } = require('./bridge.cjs');
 const hello = process.platform === 'win32' ? require('./hello.cjs') : null;
+// Icône donnée à la fenêtre Windows Hello : celle de Pimkey.exe une fois installé, le .ico du projet en développement
+const helloIcon = () => (app.isPackaged ? process.execPath : path.join(__dirname, '..', 'build', 'icon.ico'));
 const { baseDomain, guessDomains } = require('../shared/sitename.mjs');
 
 // Développement seulement : coffre de test dans un autre dossier (PIMKEY_DATA_DIR), sans toucher au vrai.
@@ -614,7 +616,7 @@ function setupIpc() {
     if (!master) throw new Error('MASTER_REQUIRED');
     if (!(await vault.verify(master))) throw new Error('Mot de passe maître incorrect.');
     const challenge = crypto.randomBytes(32).toString('base64');
-    vault.enableHello(challenge, await hello.sign(challenge, true));
+    vault.enableHello(challenge, await hello.sign(challenge, true, helloIcon()));
     return true;
   });
   handle('hello:disable', async () => {
@@ -626,14 +628,14 @@ function setupIpc() {
   handle('hello:confirm', async () => {
     const challenge = vault.helloChallenge();
     if (!hello || !challenge) throw new Error('Windows Hello n’est pas activé pour ce coffre.');
-    if (!vault.verifyHello(await hello.sign(challenge))) throw new Error('Windows Hello n’a pas été reconnu : utilisez le mot de passe maître.');
+    if (!vault.verifyHello(await hello.sign(challenge, false, helloIcon()))) throw new Error('Windows Hello n’a pas été reconnu : utilisez le mot de passe maître.');
     masterOkAt = helloOkAt = Date.now();
     return true;
   });
   handle('vault:unlockHello', async () => {
     const challenge = vault.helloChallenge();
     if (!hello || !challenge) throw new Error('Windows Hello n’est pas activé pour ce coffre.');
-    vault.unlockWithHello(await hello.sign(challenge));
+    vault.unlockWithHello(await hello.sign(challenge, false, helloIcon()));
     return afterUnlock();
   });
   handle('vault:lock', () => lock('manual'));
